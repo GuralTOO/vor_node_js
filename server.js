@@ -1,5 +1,7 @@
 import express from "express";
 import { OpenAIApi, Configuration } from "openai";
+import { OAuth2Client } from "google-auth-library";
+import trackTokenCount from "./database/index.js";
 
 // load .env variables
 import * as dotenv from "dotenv";
@@ -14,11 +16,10 @@ const configuration = new Configuration({
   apiKey: process.env.OPENAI_API_KEY,
 });
 const openai = new OpenAIApi(configuration);
-openai.listModels().then((response) => console.log(response.data.data));
 
-// Google Authentication
-// const GOOGLE_CLIENT_ID = "YOUR_GOOGLE_CLIENT_ID";
-// const oauth2Client = new OAuth2Client(GOOGLE_CLIENT_ID);
+// set-up Google Authentication
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+const oauth2Client = new OAuth2Client(GOOGLE_CLIENT_ID);
 
 // app.post("/authenticate", async (req, res) => {
 //   const { token } = req.body;
@@ -34,9 +35,31 @@ openai.listModels().then((response) => console.log(response.data.data));
 //   }
 // });
 
+// verify user
+const verifyUser = async (idToken) => {
+  try {
+    const ticket = await oauth2Client.verifyIdToken({
+      idToken: idToken,
+      audience: GOOGLE_CLIENT_ID,
+    });
+    const payload = ticket.getPayload();
+    return payload.email;
+  } catch (error) {
+    console.log(error);
+    return null;
+  }
+};
+
 // handle post request for GPT-3 completion
 app.post("/complete-text", async (req, res) => {
-  const { text } = req.body;
+  const { text, idToken } = req.body;
+
+  // verify user
+  const userId = await verifyUser(idToken);
+  if (!userId) {
+    res.status(401).json({ success: false, error: "Invalid user." });
+    return;
+  }
   console.log("text:" + text);
   openai
     .createCompletion({
@@ -46,7 +69,11 @@ app.post("/complete-text", async (req, res) => {
       temperature: 0.6,
     })
     .then((response) => {
-      console.log(response.data.choices[0].text);
+      // track token count for user
+      const tokens_to_add = response.data.usage.total_tokens;
+      trackTokenCount(userId, tokens_to_add);
+
+      // return the completion
       res.json({ success: true, text: response.data.choices[0].text });
     });
 });
